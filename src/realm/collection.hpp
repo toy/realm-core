@@ -227,7 +227,6 @@ public:
     virtual void set_owner(const Obj& obj, ColKey) = 0;
     virtual void set_owner(std::shared_ptr<CollectionParent> parent, CollectionParent::Index index) = 0;
 
-
     StringData get_property_name() const
     {
         return get_table()->get_column_name(get_col_key());
@@ -256,6 +255,10 @@ protected:
     CollectionBase(CollectionBase&&) noexcept = default;
     CollectionBase& operator=(const CollectionBase&) noexcept = default;
     CollectionBase& operator=(CollectionBase&&) noexcept = default;
+
+    bson::Bson link_to_bson(ObjKey obj_key) const;
+    bson::Bson mixed_to_bson(Mixed value) const;
+    ObjLink is_link(const bson::BsonDocument& document);
 
     void validate_index(const char* msg, size_t index, size_t size) const;
     std::pair<std::string, std::string> get_open_close_strings(size_t link_depth, JSONOutputMode output_mode) const;

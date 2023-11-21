@@ -36,6 +36,12 @@ class CascadeState;
 class ObjList;
 struct GlobalKey;
 
+namespace bson {
+class Bson;
+class BsonArray;
+class BsonDocument;
+} // namespace bson
+
 template <class>
 class Lst;
 template <class>
@@ -174,6 +180,7 @@ public:
         std::vector<ObjLink> followed;
         to_json(out, link_depth, renames, followed, output_mode);
     }
+    void to_bson(bson::BsonDocument&) const;
 
     std::string to_string() const;
 
@@ -225,7 +232,9 @@ public:
     {
         return set_null(get_column_key(col_name), is_default);
     }
-    Obj& set_json(ColKey col_key, StringData json);
+    Obj& set_json(ColKey col_key, std::string_view json);
+    Obj& set(ColKey col_key, const bson::Bson& value);
+    Obj& set(const bson::BsonDocument&);
 
     Obj& add_int(ColKey col_key, int64_t value);
     Obj& add_int(StringData col_name, int64_t value)

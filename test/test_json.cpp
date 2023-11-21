@@ -971,7 +971,8 @@ TEST(Bson_bson)
 
 TEST(Bson_Parse)
 {
-    Table t;
+    Group g;
+    Table& t = *g.add_table("table");
     auto col_id = t.add_column(type_UUID, "id");
     auto col_id2 = t.add_column(type_ObjectId, "id2");
     auto col_name = t.add_column(type_String, "name");
@@ -981,6 +982,7 @@ TEST(Bson_Parse)
     auto col_price = t.add_column(type_Decimal, "price");
     auto col_sold = t.add_column(type_Bool, "sold");
     auto col_weight = t.add_column(type_Double, "weight");
+    auto col_additional = t.add_column(type_Mixed, "additional");
 
     auto o = t.create_object();
     o.set(col_id, UUID("3b241101-e2bb-4255-8caf-4136c566a961"));
@@ -998,27 +1000,38 @@ TEST(Bson_Parse)
     dict.insert("Street", "Paradisæblevej");
     dict.insert("Number", 111);
     dict.insert("City", "Andeby");
+    o.set_collection(col_additional, CollectionType::Dictionary);
+    dict = o.get_dictionary(col_additional);
+    dict.insert_collection("Scores", CollectionType::List);
+    auto list = dict.get_list("Scores");
+    list->add(1);
+    list->add(5);
+    list->add(7);
+    dict.insert("Null", Mixed());
+
+    auto o2 = t.create_object();
+    // o2.set(col_additional, Mixed(o.get_link()));
 
     std::ostringstream ss;
-    o.to_json(ss, 0, {}, output_mode_xjson);
-    ss << std::endl;
+    g.to_json(ss, 0, {}, output_mode_xjson);
 
     auto json = ss.str();
     // std::cout << json << std::endl;
 
-    bson::Bson bson1 = bson::parse(json.c_str());
-    auto doc = static_cast<bson::BsonDocument>(bson1);
-    auto bin = doc["bin"];
+    auto bson_group = static_cast<bson::BsonDocument>(bson::parse(json.c_str()));
+    auto objects = static_cast<bson::BsonArray>(bson_group["table"]);
+    auto obj = static_cast<bson::BsonDocument>(objects[0]);
+    auto bin = obj["bin"];
     auto bin_data = static_cast<BinaryData>(bin);
     CHECK_EQUAL(bin_data.size(), 6);
-    CHECK_EQUAL(doc["time"], now);
-    auto data2 = doc.serialize();
+    CHECK_EQUAL(obj["time"], now);
+    auto data2 = bson_group.serialize();
 
     // Create reference
     auto bson = bson_new_from_json((const uint8_t*)json.c_str(), -1, nullptr);
     auto data1 = bson_get_data(bson);
     // size_t len;
-    // std::cout << bson_as_canonical_extended_json (bson, &len) << std::endl;
+    // std::cout << bson_as_canonical_extended_json(bson, &len) << std::endl;
 
     CHECK_EQUAL(bson->len, data2.size());
     if (!CHECK(memcmp(data1, data2.data(), data2.size()) == 0)) {
@@ -1028,6 +1041,10 @@ TEST(Bson_Parse)
             }
         }
     }
+    auto doc2 = g.to_bson();
+    data2 = doc2.serialize();
+    CHECK_EQUAL(bson->len, data2.size());
+    CHECK(memcmp(data1, data2.data(), data2.size()) == 0);
 }
 
 TEST(JSONParser_XJson)

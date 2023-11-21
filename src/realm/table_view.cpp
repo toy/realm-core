@@ -20,6 +20,7 @@
 #include <realm/column_integer.hpp>
 #include <realm/index_string.hpp>
 #include <realm/transaction.hpp>
+#include <realm/util/bson/bson.hpp>
 
 #include <unordered_set>
 
@@ -284,6 +285,19 @@ void TableView::to_json(std::ostream& out, size_t link_depth, const std::map<std
     }
 
     out << "]";
+}
+
+bson::BsonArray TableView::to_bson() const
+{
+    bson::BsonArray ret;
+    auto sz = size();
+    for (size_t ndx = 0; ndx < sz; ++ndx) {
+        if (auto obj = get_object(ndx)) {
+            auto doc = ret.append_document();
+            obj.to_bson(doc);
+        }
+    }
+    return ret;
 }
 
 bool TableView::depends_on_deleted_object() const

@@ -481,6 +481,7 @@ public:
     void schema_to_json(std::ostream& out, std::map<std::string, std::string>* renames = nullptr) const;
     void to_json(std::ostream& out, size_t link_depth = 0, std::map<std::string, std::string>* renames = nullptr,
                  JSONOutputMode output_mode = output_mode_json) const;
+    bson::BsonDocument to_bson() const;
 
     /// Compare two groups for equality. Two groups are equal if, and
     /// only if, they contain the same tables in the same order, that

@@ -68,7 +68,7 @@ void Group::to_json(std::ostream& out, size_t link_depth, std::map<std::string, 
     for (size_t i = 0; i < keys.size(); ++i) {
         auto key = keys[i];
         StringData name = get_table_name(key);
-        if (renames[name] != "")
+        if (renames.count(name))
             name = renames[name];
 
         ConstTableRef table = get_table(key);
@@ -105,140 +105,6 @@ void Table::to_json(std::ostream& out, size_t link_depth, const std::map<std::st
     }
 
     out << "]";
-}
-
-using Json = nlohmann::json;
-
-template <typename T>
-void Dictionary::insert_json(const std::string& key, const T& value)
-{
-    const Json& j = value;
-    switch (j.type()) {
-        case Json::value_t::null:
-            insert(key, Mixed());
-            break;
-        case Json::value_t::string:
-            insert(key, j.get<std::string>());
-            break;
-        case Json::value_t::boolean:
-            insert(key, j.get<bool>());
-            break;
-        case Json::value_t::number_integer:
-        case Json::value_t::number_unsigned:
-            insert(key, j.get<int64_t>());
-            break;
-        case Json::value_t::number_float:
-            insert(key, j.get<double>());
-            break;
-        case Json::value_t::object: {
-            insert_collection(key, CollectionType::Dictionary);
-            auto dict = get_dictionary(key);
-            for (auto [k, v] : j.items()) {
-                dict->insert_json(k, v);
-            }
-            break;
-        }
-        case Json::value_t::array: {
-            insert_collection(key, CollectionType::List);
-            auto list = get_list(key);
-            for (auto&& elem : value) {
-                list->add_json(elem);
-            }
-            break;
-        }
-        case Json::value_t::binary:
-        case Json::value_t::discarded:
-            REALM_TERMINATE("should never see discarded or binary");
-    }
-}
-
-template <typename T>
-void Lst<Mixed>::add_json(const T& value)
-{
-    const Json& j = value;
-    size_t sz = size();
-    switch (j.type()) {
-        case Json::value_t::null:
-            insert(sz, Mixed());
-            break;
-        case Json::value_t::string:
-            insert(sz, j.get<std::string>());
-            break;
-        case Json::value_t::boolean:
-            insert(sz, j.get<bool>());
-            break;
-        case Json::value_t::number_integer:
-        case Json::value_t::number_unsigned:
-            insert(sz, j.get<int64_t>());
-            break;
-        case Json::value_t::number_float:
-            insert(sz, j.get<double>());
-            break;
-        case Json::value_t::object: {
-            insert_collection(sz, CollectionType::Dictionary);
-            auto dict = get_dictionary(sz);
-            for (auto [k, v] : j.items()) {
-                dict->insert_json(k, v);
-            }
-            break;
-        }
-        case Json::value_t::array: {
-            insert_collection(sz, CollectionType::List);
-            auto list = get_list(sz);
-            for (auto&& elem : j) {
-                list->add_json(elem);
-            }
-            break;
-        }
-        case Json::value_t::binary:
-        case Json::value_t::discarded:
-            REALM_TERMINATE("should never see discarded or binary");
-    }
-}
-
-Obj& Obj::set_json(ColKey col_key, StringData json)
-{
-    auto j = Json::parse(std::string_view(json.data(), json.size()), nullptr, false);
-    switch (j.type()) {
-        case Json::value_t::null:
-            set(col_key, Mixed());
-            break;
-        case Json::value_t::string:
-            set(col_key, Mixed(j.get<std::string>()));
-            break;
-        case Json::value_t::boolean:
-            set(col_key, Mixed(j.get<bool>()));
-            break;
-        case Json::value_t::number_integer:
-        case Json::value_t::number_unsigned:
-            set(col_key, Mixed(j.get<int64_t>()));
-            break;
-        case Json::value_t::number_float:
-            set(col_key, Mixed(j.get<double>()));
-            break;
-        case Json::value_t::object: {
-            set_collection(col_key, CollectionType::Dictionary);
-            Dictionary dict(*this, col_key);
-            for (auto [k, v] : j.items()) {
-                dict.insert_json(k, v);
-            }
-            break;
-        }
-        case Json::value_t::array: {
-            set_collection(col_key, CollectionType::List);
-            Lst<Mixed> list(*this, col_key);
-            list.clear();
-            for (auto&& elem : j) {
-                list.add_json(elem);
-            }
-        } break;
-        case Json::value_t::binary:
-            // Parser will never return binary
-        case Json::value_t::discarded:
-            throw InvalidArgument(ErrorCodes::MalformedJson, "Illegal json");
-    }
-
-    return *this;
 }
 
 void Obj::to_json(std::ostream& out, size_t link_depth, const std::map<std::string, std::string>& renames,
