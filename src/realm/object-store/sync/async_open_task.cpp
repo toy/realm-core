@@ -23,6 +23,7 @@
 #include <realm/object-store/impl/realm_coordinator.hpp>
 #include <realm/object-store/sync/sync_session.hpp>
 #include <realm/object-store/thread_safe_reference.hpp>
+#include <realm/object-store/util/scheduler.hpp>
 
 namespace realm {
 
@@ -120,7 +121,7 @@ void AsyncOpenTask::attach_to_subscription_initializer(AsyncOpenCallback&& callb
 
     SharedRealm shared_realm;
     try {
-        shared_realm = coordinator->get_realm(nullptr, m_db_first_open);
+        shared_realm = coordinator->get_realm(util::Scheduler::make_dummy(), m_db_first_open);
     }
     catch (...) {
         async_open_complete(std::move(callback), coordinator, exception_to_status());
