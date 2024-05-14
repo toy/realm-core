@@ -4086,7 +4086,8 @@ TEST_CASE("flx: convert flx sync realm to bundled realm", "[app][flx][baas]") {
     }
 }
 
-TEST_CASE("flx: compensating write errors get re-sent across sessions", "[sync][flx][compensating write][baas]") {
+TEST_CASE("flx: compensating write errors get re-sent across sessions",
+          "[sync][flx][compensating write][baas][disable_network_chaos]") {
     AppCreateConfig::ServiceRole role;
     role.name = "compensating_write_perms";
 
@@ -4596,9 +4597,7 @@ TEST_CASE("flx: open realm + register subscription callback while bootstrapping"
     }
 }
 TEST_CASE("flx sync: Client reset during async open", "[sync][flx][client reset][async open][baas]") {
-    auto transport = create_dropping_socket_provider(util::Logger::get_default_logger());
-    FLXSyncTestHarness harness("flx_bootstrap_reset", FLXSyncTestHarness::default_server_schema(),
-                               instance_of<SynchronousTestTransport>, transport);
+    FLXSyncTestHarness harness("flx_bootstrap_reset", FLXSyncTestHarness::default_server_schema());
     auto foo_obj_id = ObjectId::gen();
     std::atomic<bool> subscription_invoked = false;
     harness.load_initial_data([&](SharedRealm realm) {

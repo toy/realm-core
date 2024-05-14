@@ -20,6 +20,7 @@
 
 #include "util/test_utils.hpp"
 #include "util/sync/baas_admin_api.hpp"
+#include "util/sync/mockable_proxy_server.hpp"
 #include "util/sync/sync_test_utils.hpp"
 #include "../util/crypt_key.hpp"
 #include "../util/test_path.hpp"
@@ -357,7 +358,17 @@ TestAppSession::TestAppSession(AppSession session,
 
     util::try_make_dir(m_base_file_path);
     app_config.sync_client_config.reconnect_mode = reconnect_mode;
-    app_config.sync_client_config.socket_provider = custom_socket_provider;
+    if (custom_socket_provider) {
+        app_config.sync_client_config.socket_provider = custom_socket_provider;
+    }
+    else if (auto testing_provider = get_testing_sync_socket_provider()) {
+        app_config.sync_client_config.socket_provider = testing_provider;
+        app_config.sync_client_config.sync_connect_failed_is_transient = true;
+    }
+
+    if (auto delay_info = get_testing_resumption_delay_info()) {
+        app_config.sync_client_config.timeouts.reconnect_backoff_info = *delay_info;
+    }
     // With multiplexing enabled, the linger time controls how long a
     // connection is kept open for reuse. In tests, we want to shut
     // down sync clients immediately.

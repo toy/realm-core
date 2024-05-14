@@ -152,6 +152,7 @@ ClientImpl::ClientImpl(ClientConfig config)
     , m_enable_default_port_hack{config.enable_default_port_hack}
     , m_disable_upload_compaction{config.disable_upload_compaction}
     , m_fix_up_object_ids{config.fix_up_object_ids}
+    , m_sync_connect_failed_is_transient{config.sync_connect_failed_is_transient}
     , m_roundtrip_time_handler{std::move(config.roundtrip_time_handler)}
     , m_socket_provider{std::move(config.socket_provider)}
     , m_client_protocol{} // Throws
@@ -188,6 +189,7 @@ ClientImpl::ClientImpl(ClientConfig config)
                  config.disable_upload_compaction); // Throws
     logger.debug("Config param: disable_sync_to_disk = %1",
                  config.disable_sync_to_disk); // Throws
+    logger.debug("Config param: sync_connect_failed_is_transient = %1", config.sync_connect_failed_is_transient);
     logger.debug(
         "Config param: reconnect backoff info: max_delay: %1 ms, initial_delay: %2 ms, multiplier: %3, jitter: 1/%4",
         m_reconnect_backoff_info.max_resumption_delay_interval.count(),
@@ -529,6 +531,9 @@ bool Connection::websocket_closed_handler(bool was_clean, WebSocketError error_c
             // to make sure the websocket URL is correct
             if (!m_server_endpoint.is_verified) {
                 error_info.server_requests_action = ProtocolErrorInfo::Action::RefreshLocation;
+            }
+            if (m_client.m_sync_connect_failed_is_transient) {
+                error_info.server_requests_action = ProtocolErrorInfo::Action::Transient;
             }
             involuntary_disconnect(std::move(error_info), ConnectionTerminationReason::connect_operation_failed);
             break;
@@ -1190,7 +1195,9 @@ void Connection::disconnect(const SessionErrorInfo& info)
 
     m_websocket_sentinel->destroyed = true;
     m_websocket_sentinel.reset();
-    m_websocket->close();
+    if (m_websocket) {
+        m_websocket->close();
+    }
     m_websocket.reset();
     m_input_body_buffer.reset();
     m_sending_session = nullptr;
