@@ -151,6 +151,9 @@ SyncTestFile::SyncTestFile(std::shared_ptr<SyncUser> user, bson::Bson partition,
     sync_config = std::make_shared<realm::SyncConfig>(user, partition);
     sync_config->stop_policy = SyncSessionStopPolicy::Immediately;
     sync_config->error_handler = [](std::shared_ptr<SyncSession>, SyncError error) {
+        if (error.status == ErrorCodes::SyncConnectFailed) {
+            return;
+        }
         util::format(std::cerr, "An unexpected sync error was caught by the default SyncTestFile handler: '%1'\n",
                      error.status);
         abort();
@@ -179,6 +182,9 @@ SyncTestFile::SyncTestFile(std::shared_ptr<realm::SyncUser> user, realm::Schema 
     sync_config = std::make_shared<realm::SyncConfig>(user, SyncConfig::FLXSyncEnabled{});
     sync_config->stop_policy = SyncSessionStopPolicy::Immediately;
     sync_config->error_handler = [](std::shared_ptr<SyncSession> session, SyncError error) {
+        if (error.status == ErrorCodes::SyncConnectFailed) {
+            return;
+        }
         util::format(std::cerr,
                      "An unexpected sync error was caught by the default SyncTestFile handler: '%1' for '%2'",
                      error.status, session->path());

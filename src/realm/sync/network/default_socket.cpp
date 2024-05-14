@@ -19,7 +19,7 @@ class DefaultWebSocketImpl final : public DefaultWebSocket, public Config {
 public:
     DefaultWebSocketImpl(const std::shared_ptr<util::Logger>& logger_ptr, network::Service& service,
                          std::mt19937_64& random, const std::string user_agent,
-                         std::unique_ptr<WebSocketObserver> observer, WebSocketEndpoint&& endpoint)
+                         util::UniqueFunction<void(WebSocketEvent&&)> observer, WebSocketEndpoint&& endpoint)
         : m_logger_ptr{logger_ptr}
         , m_network_logger{*m_logger_ptr}
         , m_random{random}
@@ -36,10 +36,20 @@ public:
 
     void async_write_binary(util::Span<const char> data, SyncSocketProvider::FunctionHandler&& handler) override
     {
+        if (m_closed) {
+            handler({ErrorCodes::OperationAborted, "WebSocket already closed"});
+            return;
+        }
         m_websocket.async_write_binary(data.data(), data.size(),
                                        [write_handler = std::move(handler)](std::error_code ec, size_t) {
                                            write_handler(DefaultWebSocketImpl::get_status_from_util_error(ec));
                                        });
+    }
+
+    void close() override
+    {
+        m_closed = true;
+        m_websocket.stop();
     }
 
     std::string_view get_appservices_request_id() const noexcept override
@@ -71,12 +81,15 @@ private:
 
     void websocket_handshake_completion_handler(const HTTPHeaders& headers) override
     {
+        if (m_closed) {
+            return;
+        }
         const std::string empty;
         if (auto it = headers.find("X-Appservices-Request-Id"); it != headers.end()) {
             m_app_services_coid = it->second;
         }
         auto it = headers.find("Sec-WebSocket-Protocol");
-        m_observer->websocket_connected_handler(it == headers.end() ? empty : it->second);
+        m_observer(WebSocketEvent{WebSocketEvent::Open{it == headers.end() ? empty : it->second}});
     }
     void websocket_read_error_handler(std::error_code ec) override
     {
@@ -160,14 +173,22 @@ private:
     }
     bool websocket_error_and_close_handler(bool was_clean, WebSocketError code, std::string_view reason)
     {
-        if (!was_clean) {
-            m_observer->websocket_error_handler();
+        if (m_closed) {
+            return false;
         }
-        return m_observer->websocket_closed_handler(was_clean, code, reason);
+        if (!was_clean) {
+            m_observer(WebSocketEvent{WebSocketEvent::Error{}});
+        }
+        m_observer(WebSocketEvent{WebSocketEvent::Close{was_clean, code, reason}});
+        return m_closed;
     }
     bool websocket_binary_message_received(const char* ptr, std::size_t size) override
     {
-        return m_observer->websocket_binary_message_received(util::Span<const char>(ptr, size));
+        if (m_closed) {
+            return false;
+        }
+        m_observer(WebSocketEvent{WebSocketEvent::Message{util::Span<const char>(ptr, size)}});
+        return !m_closed;
     }
 
     static Status get_status_from_util_error(std::error_code ec)
@@ -221,7 +242,8 @@ private:
     const std::string m_user_agent;
     std::string m_app_services_coid;
 
-    std::unique_ptr<WebSocketObserver> m_observer;
+    util::UniqueFunction<void(WebSocketEvent&&)> m_observer;
+    bool m_closed = false;
 
     const WebSocketEndpoint m_endpoint;
     util::Optional<network::Resolver> m_resolver;
@@ -682,7 +704,7 @@ void DefaultSocketProvider::state_wait_for(std::unique_lock<std::mutex>& lock, S
     });
 }
 
-std::unique_ptr<WebSocketInterface> DefaultSocketProvider::connect(std::unique_ptr<WebSocketObserver> observer,
+std::unique_ptr<WebSocketInterface> DefaultSocketProvider::connect(util::UniqueFunction<void(WebSocketEvent&&)> observer,
                                                                    WebSocketEndpoint&& endpoint)
 {
     return std::make_unique<DefaultWebSocketImpl>(m_logger_ptr, m_service, m_random, m_user_agent,

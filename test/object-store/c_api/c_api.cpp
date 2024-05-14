@@ -30,6 +30,7 @@
 #include <realm/sync/binding_callback_thread_observer.hpp>
 #include <realm/util/base64.hpp>
 #include <realm/util/logger.hpp>
+#include <realm/util/overload.hpp>
 
 #include <catch2/catch_all.hpp>
 
@@ -7005,42 +7006,6 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
     using namespace realm::sync;
     using namespace realm::sync::websocket;
 
-    struct TestWebSocketObserverShim : sync::WebSocketObserver {
-    public:
-        explicit TestWebSocketObserverShim(realm_websocket_observer_t* observer)
-            : m_observer(observer)
-        {
-        }
-
-        void websocket_connected_handler(const std::string& protocol) override
-        {
-            REALM_ASSERT(m_observer);
-            realm_sync_socket_websocket_connected(m_observer, protocol.c_str());
-        }
-
-        void websocket_error_handler() override
-        {
-            REALM_ASSERT(m_observer);
-            realm_sync_socket_websocket_error(m_observer);
-        }
-
-        bool websocket_binary_message_received(util::Span<const char> data) override
-        {
-            REALM_ASSERT(m_observer);
-            return realm_sync_socket_websocket_message(m_observer, data.data(), data.size());
-        }
-
-        bool websocket_closed_handler(bool was_clean, WebSocketError error, std::string_view msg) override
-        {
-            REALM_ASSERT(m_observer);
-            return realm_sync_socket_websocket_closed(m_observer, was_clean,
-                                                      static_cast<realm_web_socket_errno_e>(error), msg.data());
-        }
-
-    private:
-        realm_websocket_observer_t* m_observer;
-    };
-
     struct TestWebSocket : realm::c_api::WrapC, WebSocketInterface {
     public:
         TestWebSocket(DefaultSocketProvider& socket_provider, realm_websocket_endpoint_t endpoint,
@@ -7055,13 +7020,22 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
             }
             ws_endpoint.is_ssl = endpoint.is_ssl;
 
-            auto observer = std::make_unique<TestWebSocketObserverShim>(realm_websocket_observer);
+            auto observer = [observer = realm_websocket_observer](WebSocketEvent&& event) {
+                REALM_ASSERT(observer);
+                (*observer->observer)(std::move(event));
+            };
+
             m_websocket = socket_provider.connect(std::move(observer), std::move(ws_endpoint));
         }
 
         void async_write_binary(util::Span<const char> data, SyncSocketProvider::FunctionHandler&& handler) override
         {
             m_websocket->async_write_binary(data, std::move(handler));
+        }
+
+        void close() override
+        {
+            m_websocket->close();
         }
 
     private:
@@ -7162,6 +7136,16 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
                 capi_callback, static_cast<realm_sync_socket_callback_result_e>(s.code()), s.reason().c_str());
         });
     };
+
+    auto websocket_close_fn = [](realm_userdata_t userdata, realm_sync_socket_websocket_t sync_websocket) {
+        auto test_data = static_cast<TestData*>(userdata);
+        LOCKED_REQUIRE(test_data);
+        LOCKED_REQUIRE(test_data->socket_provider);
+        auto websocket = static_cast<TestWebSocket*>(sync_websocket);
+        LOCKED_REQUIRE(websocket);
+        websocket->close();
+    };
+
     auto websocket_free_fn = [](realm_userdata_t userdata, realm_sync_socket_websocket_t sync_websocket) {
         auto test_data = static_cast<TestData*>(userdata);
         LOCKED_REQUIRE(test_data);
@@ -7171,9 +7155,9 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
 
     // Test drive.
     TestData test_data{&default_socket_provider};
-    auto socket_provider = realm_sync_socket_new(static_cast<realm_userdata_t>(&test_data), userdata_free_fn, post_fn,
-                                                 create_timer_fn, cancel_timer_fn, free_timer_fn,
-                                                 websocket_connect_fn, websocket_async_write_fn, websocket_free_fn);
+    auto socket_provider = realm_sync_socket_new(
+        static_cast<realm_userdata_t>(&test_data), userdata_free_fn, post_fn, create_timer_fn, cancel_timer_fn,
+        free_timer_fn, websocket_connect_fn, websocket_async_write_fn, websocket_close_fn, websocket_free_fn);
     {
         FLXSyncTestHarness harness("c_api_websocket_provider", FLXSyncTestHarness::default_server_schema(),
                                    instance_of<SynchronousTestTransport>, *socket_provider);

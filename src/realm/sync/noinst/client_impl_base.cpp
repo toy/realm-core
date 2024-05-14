@@ -698,53 +698,6 @@ void Connection::handle_reconnect_wait(Status status)
         initiate_reconnect(); // Throws
 }
 
-struct Connection::WebSocketObserverShim : public sync::WebSocketObserver {
-    explicit WebSocketObserverShim(Connection* conn)
-        : conn(conn)
-        , sentinel(conn->m_websocket_sentinel)
-    {
-    }
-
-    Connection* conn;
-    util::bind_ptr<LifecycleSentinel> sentinel;
-
-    void websocket_connected_handler(const std::string& protocol) override
-    {
-        if (sentinel->destroyed) {
-            return;
-        }
-
-        return conn->websocket_connected_handler(protocol);
-    }
-
-    void websocket_error_handler() override
-    {
-        if (sentinel->destroyed) {
-            return;
-        }
-
-        conn->websocket_error_handler();
-    }
-
-    bool websocket_binary_message_received(util::Span<const char> data) override
-    {
-        if (sentinel->destroyed) {
-            return false;
-        }
-
-        return conn->websocket_binary_message_received(data);
-    }
-
-    bool websocket_closed_handler(bool was_clean, WebSocketError error_code, std::string_view msg) override
-    {
-        if (sentinel->destroyed) {
-            return true;
-        }
-
-        return conn->websocket_closed_handler(was_clean, error_code, msg);
-    }
-};
-
 void Connection::initiate_reconnect()
 {
     REALM_ASSERT(m_activated);
@@ -755,6 +708,9 @@ void Connection::initiate_reconnect()
         m_websocket_sentinel->destroyed = true;
     }
     m_websocket_sentinel = util::make_bind<LifecycleSentinel>();
+    if (m_websocket) {
+        m_websocket->close();
+    }
     m_websocket.reset();
 
     // Watchdog
@@ -778,21 +734,43 @@ void Connection::initiate_reconnect()
                 m_server_endpoint.port, m_http_request_path_prefix);
 
     m_websocket_error_received = false;
-    m_websocket =
-        m_client.m_socket_provider->connect(std::make_unique<WebSocketObserverShim>(this),
-                                            WebSocketEndpoint{
-                                                m_server_endpoint.address,
-                                                m_server_endpoint.port,
-                                                get_http_request_path(),
-                                                std::move(sec_websocket_protocol),
-                                                is_ssl(m_server_endpoint.envelope),
-                                                /// DEPRECATED - The following will be removed in a future release
-                                                {m_custom_http_headers.begin(), m_custom_http_headers.end()},
-                                                m_verify_servers_ssl_certificate,
-                                                m_ssl_trust_certificate_path,
-                                                m_ssl_verify_callback,
-                                                m_proxy_config,
-                                            });
+
+    auto observer = [this, sentinel = m_websocket_sentinel](WebSocketEvent&& event) {
+        if (sentinel->destroyed) {
+            return;
+        }
+        using Event = WebSocketEvent;
+        mpark::visit(overload{
+                         [&](const Event::Close& close) {
+                             websocket_closed_handler(close.was_clean, close.error_code, close.message);
+                         },
+                         [&](const Event::Error&) {
+                             websocket_error_handler();
+                         },
+                         [&](const Event::Message& message) {
+                             websocket_binary_message_received(message.bytes);
+                         },
+                         [&](const Event::Open& open) {
+                             websocket_connected_handler(std::string{open.protocol});
+                         },
+                     },
+                     event.event);
+    };
+
+    m_websocket = m_client.m_socket_provider->connect(
+        std::move(observer), WebSocketEndpoint{
+                                 m_server_endpoint.address,
+                                 m_server_endpoint.port,
+                                 get_http_request_path(),
+                                 std::move(sec_websocket_protocol),
+                                 is_ssl(m_server_endpoint.envelope),
+                                 /// DEPRECATED - The following will be removed in a future release
+                                 {m_custom_http_headers.begin(), m_custom_http_headers.end()},
+                                 m_verify_servers_ssl_certificate,
+                                 m_ssl_trust_certificate_path,
+                                 m_ssl_verify_callback,
+                                 m_proxy_config,
+                             });
 }
 
 
@@ -981,7 +959,7 @@ void Connection::initiate_write_message(const OutputBuffer& out, Session* sess)
         if (!status.is_ok()) {
             if (status != ErrorCodes::Error::OperationAborted) {
                 // Write errors will be handled by the websocket_write_error_handler() callback
-                logger.error("Connection: write failed %1: %2", status.code_string(), status.reason());
+                logger.error("Connection: write failed %1", status);
             }
             return;
         }
@@ -1066,7 +1044,7 @@ void Connection::initiate_write_ping(const OutputBuffer& out)
         if (!status.is_ok()) {
             if (status != ErrorCodes::Error::OperationAborted) {
                 // Write errors will be handled by the websocket_write_error_handler() callback
-                logger.error("Connection: send ping failed %1: %2", status.code_string(), status.reason());
+                logger.error("Connection: send ping failed %1", status);
             }
             return;
         }
@@ -1212,6 +1190,7 @@ void Connection::disconnect(const SessionErrorInfo& info)
 
     m_websocket_sentinel->destroyed = true;
     m_websocket_sentinel.reset();
+    m_websocket->close();
     m_websocket.reset();
     m_input_body_buffer.reset();
     m_sending_session = nullptr;

@@ -24,6 +24,7 @@
 #include <util/crypt_key.hpp>
 #include <util/sync/flx_sync_harness.hpp>
 #include <util/sync/sync_test_utils.hpp>
+#include <util/sync/mockable_proxy_server.hpp>
 
 #include <realm/object_id.hpp>
 #include <realm/query_expression.hpp>
@@ -4595,7 +4596,9 @@ TEST_CASE("flx: open realm + register subscription callback while bootstrapping"
     }
 }
 TEST_CASE("flx sync: Client reset during async open", "[sync][flx][client reset][async open][baas]") {
-    FLXSyncTestHarness harness("flx_bootstrap_reset");
+    auto transport = create_dropping_socket_provider(util::Logger::get_default_logger());
+    FLXSyncTestHarness harness("flx_bootstrap_reset", FLXSyncTestHarness::default_server_schema(),
+                               instance_of<SynchronousTestTransport>, transport);
     auto foo_obj_id = ObjectId::gen();
     std::atomic<bool> subscription_invoked = false;
     harness.load_initial_data([&](SharedRealm realm) {
