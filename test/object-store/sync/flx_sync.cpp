@@ -232,7 +232,7 @@ TEST_CASE("flx: connect to FLX-enabled app", "[sync][flx][baas]") {
     });
 }
 
-TEST_CASE("flx: test commands work", "[sync][flx][test command][baas]") {
+TEST_CASE("flx: test commands work", "[sync][flx][test command][baas][no network chaos]") {
     FLXSyncTestHarness harness("test_commands");
     harness.do_with_new_realm([&](const SharedRealm& realm) {
         wait_for_upload(*realm);
@@ -280,7 +280,7 @@ static auto make_client_reset_handler()
 }
 
 
-TEST_CASE("app: error handling integration test", "[sync][flx][baas]") {
+TEST_CASE("app: error handling integration test", "[sync][flx][baas][no network chaos]") {
     static std::optional<FLXSyncTestHarness> harness{"error_handling"};
     create_user_and_log_in(harness->app());
     SyncTestFile config(harness->app()->current_user(), harness->schema(), SyncConfig::FLXSyncEnabled{});
@@ -1669,6 +1669,7 @@ TEST_CASE("flx: uploading an object that is out-of-view results in compensating 
                              err.status);
                 abort();
             }
+            util::Logger::get_default_logger()->info("emplacing error value");
             error_promise->emplace_value(std::move(err));
             error_promise.reset();
         };
@@ -3704,7 +3705,7 @@ TEST_CASE("flx: send client error", "[sync][flx][baas]") {
     CHECK(error_count == 2);
 }
 
-TEST_CASE("flx: bootstraps contain all changes", "[sync][flx][bootstrap][baas]") {
+TEST_CASE("flx: bootstraps contain all changes", "[sync][flx][bootstrap][baas][no network chaos]") {
     FLXSyncTestHarness harness("bootstrap_full_sync");
 
     auto setup_subs = [](SharedRealm& realm) {
@@ -4087,7 +4088,7 @@ TEST_CASE("flx: convert flx sync realm to bundled realm", "[app][flx][baas]") {
 }
 
 TEST_CASE("flx: compensating write errors get re-sent across sessions",
-          "[sync][flx][compensating write][baas][disable_network_chaos]") {
+          "[sync][flx][compensating write][baas][no network chaos]") {
     AppCreateConfig::ServiceRole role;
     role.name = "compensating_write_perms";
 

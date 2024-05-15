@@ -422,10 +422,6 @@ typedef void (*realm_sync_socket_websocket_async_write_func_t)(realm_userdata_t 
                                                                const char* data, size_t size,
                                                                realm_sync_socket_write_callback_t* write_callback);
 
-typedef void (*realm_sync_socket_websocket_close_func_t)(realm_userdata_t userdata,
-                                                         realm_sync_socket_websocket_t websocket);
-
-
 // Called when the websocket has been destroyed in the Sync Client - no more write callbacks or observer
 // functions should be called when this function is called.
 typedef void (*realm_sync_socket_websocket_free_func_t)(realm_userdata_t userdata,
@@ -4400,7 +4396,6 @@ RLM_API realm_sync_socket_t* realm_sync_socket_new(
     realm_sync_socket_timer_canceled_func_t cancel_timer_func, realm_sync_socket_timer_free_func_t free_timer_func,
     realm_sync_socket_connect_func_t websocket_connect_func,
     realm_sync_socket_websocket_async_write_func_t websocket_write_func,
-    realm_sync_socket_websocket_close_func_t websocket_close_func,
     realm_sync_socket_websocket_free_func_t websocket_free_func);
 
 /**

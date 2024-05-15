@@ -7033,11 +7033,6 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
             m_websocket->async_write_binary(data, std::move(handler));
         }
 
-        void close() override
-        {
-            m_websocket->close();
-        }
-
     private:
         std::unique_ptr<WebSocketInterface> m_websocket;
     };
@@ -7137,15 +7132,6 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
         });
     };
 
-    auto websocket_close_fn = [](realm_userdata_t userdata, realm_sync_socket_websocket_t sync_websocket) {
-        auto test_data = static_cast<TestData*>(userdata);
-        LOCKED_REQUIRE(test_data);
-        LOCKED_REQUIRE(test_data->socket_provider);
-        auto websocket = static_cast<TestWebSocket*>(sync_websocket);
-        LOCKED_REQUIRE(websocket);
-        websocket->close();
-    };
-
     auto websocket_free_fn = [](realm_userdata_t userdata, realm_sync_socket_websocket_t sync_websocket) {
         auto test_data = static_cast<TestData*>(userdata);
         LOCKED_REQUIRE(test_data);
@@ -7155,9 +7141,9 @@ TEST_CASE("C API app: websocket provider", "[sync][app][c_api][baas]") {
 
     // Test drive.
     TestData test_data{&default_socket_provider};
-    auto socket_provider = realm_sync_socket_new(
-        static_cast<realm_userdata_t>(&test_data), userdata_free_fn, post_fn, create_timer_fn, cancel_timer_fn,
-        free_timer_fn, websocket_connect_fn, websocket_async_write_fn, websocket_close_fn, websocket_free_fn);
+    auto socket_provider = realm_sync_socket_new(static_cast<realm_userdata_t>(&test_data), userdata_free_fn, post_fn,
+                                                 create_timer_fn, cancel_timer_fn, free_timer_fn,
+                                                 websocket_connect_fn, websocket_async_write_fn, websocket_free_fn);
     {
         FLXSyncTestHarness harness("c_api_websocket_provider", FLXSyncTestHarness::default_server_schema(),
                                    instance_of<SynchronousTestTransport>, *socket_provider);

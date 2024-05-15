@@ -223,11 +223,6 @@ struct WebSocketInterface {
     ///                write operation, the websocket will be closed and the error
     ///                will be provided via the websocket_closed_handler() function.
     virtual void async_write_binary(util::Span<const char> data, SyncSocketProvider::FunctionHandler&& handler) = 0;
-
-    /// Closes the websocket. Must be called from the event loop of the SyncSocketProvider.
-    /// No further events will be delivered to the observer and no further messages
-    /// can be sent, although messages that had already been sent may complete.
-    virtual void close() = 0;
 };
 
 

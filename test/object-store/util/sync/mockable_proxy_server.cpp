@@ -79,9 +79,14 @@ private:
         {
         }
 
+        ~MockableProxySocket()
+        {
+            close();
+        }
+
         void async_write_binary(util::Span<const char> data,
                                 sync::SyncSocketProvider::FunctionHandler&& handler) override;
-        void close() override;
+        void close();
 
     private:
         util::bind_ptr<MockableProxySocketState> m_state;
@@ -107,15 +112,11 @@ MockableProxySocketProvider::connect(util::UniqueFunction<void(WebSocketEvent&&)
                 }
                 REALM_ASSERT(sw_event.is_ok());
                 auto event = std::move(sw_event.get_value());
-                bool was_close = mpark::holds_alternative<WebSocketEvent::Close>(event.event);
-                if (was_close) {
+                if (auto close_event = mpark::get_if<WebSocketEvent::Close>(&event.event);
+                    close_event && !close_event->was_clean) {
                     state->proxied_observer(WebSocketEvent{WebSocketEvent::Error{}});
                 }
                 state->proxied_observer(std::move(event));
-                if (was_close && state->proxied_conn) {
-                    state->proxied_conn->close();
-                    state->closed = true;
-                }
             });
     };
     auto real_ep = m_callbacks.on_websocket_create(conn_id, std::move(endpoint));
@@ -128,7 +129,6 @@ void MockableProxySocketProvider::MockableProxySocket::async_write_binary(
 {
     auto wrapped_handler = [handler = std::move(handler), state = m_state](Status status) {
         if (state->closed) {
-            handler({ErrorCodes::ConnectionClosed, "connection closed in mock proxy"});
             return;
         }
 
@@ -138,19 +138,25 @@ void MockableProxySocketProvider::MockableProxySocket::async_write_binary(
         .get_async([handler = std::move(wrapped_handler),
                     state = m_state](StatusWith<util::Span<const char>> sw_data) mutable {
             auto logger = util::Logger::get_default_logger();
+            if (state->closed) {
+                return;
+            }
             if (sw_data.is_ok()) {
                 state->proxied_conn->async_write_binary(sw_data.get_value(), std::move(handler));
                 return;
             }
 
             state->provider->post([state, handler = std::move(handler), send_status = sw_data.get_status()](Status) {
+                if (state->closed) {
+                    return;
+                }
                 handler(send_status);
                 state->closed = true;
 
                 state->proxied_observer(WebSocketEvent{WebSocketEvent::Error{}});
                 state->proxied_observer(WebSocketEvent{WebSocketEvent::Close{
                     false, sync::websocket::WebSocketError::websocket_read_error, send_status.reason()}});
-                state->proxied_conn->close();
+                state->proxied_conn.reset();
             });
         });
 }
@@ -160,9 +166,7 @@ void MockableProxySocketProvider::MockableProxySocket::close()
     if (m_state->provider->m_callbacks.on_websocket_close) {
         m_state->provider->m_callbacks.on_websocket_close(m_state->conn_id);
     }
-    if (m_state->proxied_conn) {
-        m_state->proxied_conn->close();
-    }
+    m_state->proxied_conn.reset();
     m_state->closed = true;
 }
 
@@ -266,7 +270,7 @@ public:
         }
 
         if (std::find_if(testInfo.tags.begin(), testInfo.tags.end(), [](const Catch::Tag& tag) {
-                return tag.original == "disable_network_chaos";
+                return tag.original == "no network chaos";
             }) != testInfo.tags.end()) {
             logger->info("Disabling network chaos for test %1", testInfo.name);
             m_disabled_for_current_test = true;

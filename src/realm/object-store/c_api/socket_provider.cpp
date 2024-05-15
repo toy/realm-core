@@ -82,15 +82,13 @@ struct CAPIWebSocket : sync::WebSocketInterface {
 public:
     CAPIWebSocket(realm_userdata_t userdata, realm_sync_socket_connect_func_t websocket_connect_func,
                   realm_sync_socket_websocket_async_write_func_t websocket_write_func,
-                  realm_sync_socket_websocket_free_func_t websocket_free_func,
-                  realm_sync_socket_websocket_close_func_t websocket_close_func, realm_websocket_observer_t* observer,
+                  realm_sync_socket_websocket_free_func_t websocket_free_func, realm_websocket_observer_t* observer,
                   sync::WebSocketEndpoint&& endpoint)
         : m_observer(observer)
         , m_userdata(userdata)
         , m_websocket_connect(websocket_connect_func)
         , m_websocket_async_write(websocket_write_func)
         , m_websocket_free(websocket_free_func)
-        , m_websocket_close(websocket_close_func)
     {
         realm_websocket_endpoint_t capi_endpoint;
         capi_endpoint.address = endpoint.address.c_str();
@@ -123,11 +121,6 @@ public:
                                 new realm_sync_socket_write_callback_t(std::move(shared_handler)));
     }
 
-    void close() final
-    {
-        m_websocket_close(m_userdata, m_socket);
-    }
-
 private:
     // A pointer to the CAPI implementation's websocket instance. This is provided by
     // the m_websocket_connect() function when this websocket instance is created.
@@ -143,7 +136,6 @@ private:
     realm_sync_socket_connect_func_t m_websocket_connect = nullptr;
     realm_sync_socket_websocket_async_write_func_t m_websocket_async_write = nullptr;
     realm_sync_socket_websocket_free_func_t m_websocket_free = nullptr;
-    realm_sync_socket_websocket_close_func_t m_websocket_close = nullptr;
 };
 
 
@@ -161,7 +153,6 @@ struct CAPISyncSocketProvider : sync::SyncSocketProvider {
     realm_sync_socket_connect_func_t m_websocket_connect = nullptr;
     realm_sync_socket_websocket_async_write_func_t m_websocket_async_write = nullptr;
     realm_sync_socket_websocket_free_func_t m_websocket_free = nullptr;
-    realm_sync_socket_websocket_close_func_t m_websocket_close = nullptr;
 
     CAPISyncSocketProvider() = default;
     CAPISyncSocketProvider(CAPISyncSocketProvider&& other)
@@ -174,7 +165,6 @@ struct CAPISyncSocketProvider : sync::SyncSocketProvider {
         , m_websocket_connect(std::exchange(other.m_websocket_connect, nullptr))
         , m_websocket_async_write(std::exchange(other.m_websocket_async_write, nullptr))
         , m_websocket_free(std::exchange(other.m_websocket_free, nullptr))
-        , m_websocket_close(std::exchange(other.m_websocket_close, nullptr))
     {
         // userdata_free can be null if userdata is not used
         if (m_userdata != nullptr) {
@@ -202,9 +192,9 @@ struct CAPISyncSocketProvider : sync::SyncSocketProvider {
     std::unique_ptr<sync::WebSocketInterface> connect(util::UniqueFunction<void(WebSocketEvent&&)> observer,
                                                       sync::WebSocketEndpoint&& endpoint) final
     {
-        return std::make_unique<CAPIWebSocket>(
-            m_userdata, m_websocket_connect, m_websocket_async_write, m_websocket_free, m_websocket_close,
-            new realm_websocket_observer_t(std::move(observer)), std::move(endpoint));
+        return std::make_unique<CAPIWebSocket>(m_userdata, m_websocket_connect, m_websocket_async_write,
+                                               m_websocket_free, new realm_websocket_observer_t(std::move(observer)),
+                                               std::move(endpoint));
     }
 
     void post(FunctionHandler&& handler) final
@@ -230,7 +220,6 @@ RLM_API realm_sync_socket_t* realm_sync_socket_new(
     realm_sync_socket_timer_canceled_func_t cancel_timer_func, realm_sync_socket_timer_free_func_t free_timer_func,
     realm_sync_socket_connect_func_t websocket_connect_func,
     realm_sync_socket_websocket_async_write_func_t websocket_write_func,
-    realm_sync_socket_websocket_close_func_t websocket_close_func,
     realm_sync_socket_websocket_free_func_t websocket_free_func)
 {
     return wrap_err([&]() {
@@ -244,7 +233,6 @@ RLM_API realm_sync_socket_t* realm_sync_socket_new(
         capi_socket_provider->m_websocket_connect = websocket_connect_func;
         capi_socket_provider->m_websocket_async_write = websocket_write_func;
         capi_socket_provider->m_websocket_free = websocket_free_func;
-        capi_socket_provider->m_websocket_close = websocket_close_func;
         return new realm_sync_socket_t(std::move(capi_socket_provider));
     });
 }

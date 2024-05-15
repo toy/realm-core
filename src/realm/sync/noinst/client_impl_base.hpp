@@ -472,9 +472,9 @@ public:
 
     // Methods from WebSocketObserver interface for websockets from the Socket Provider
     void websocket_connected_handler(const std::string& protocol);
-    bool websocket_binary_message_received(util::Span<const char> data);
+    void websocket_binary_message_received(util::Span<const char> data);
     void websocket_error_handler();
-    bool websocket_closed_handler(bool, websocket::WebSocketError, std::string_view msg);
+    void websocket_closed_handler(bool, websocket::WebSocketError, std::string_view msg);
 
     connection_ident_type get_ident() const noexcept;
     const ServerEndpoint& get_server_endpoint() const noexcept;
@@ -498,11 +498,6 @@ public:
     ~Connection();
 
 private:
-    struct LifecycleSentinel : public util::AtomicRefCountBase {
-        bool destroyed = false;
-    };
-    struct WebSocketObserverShim;
-
     using ReceivedChangesets = ClientProtocol::ReceivedChangesets;
 
     template <class H>
@@ -592,7 +587,6 @@ private:
     friend class Session;
 
     ClientImpl& m_client;
-    util::bind_ptr<LifecycleSentinel> m_websocket_sentinel;
     std::unique_ptr<WebSocketInterface> m_websocket;
 
     /// DEPRECATED - These will be removed in a future release
@@ -1572,6 +1566,7 @@ inline void ClientImpl::Session::reset_protocol_state() noexcept
     m_upload_progress = m_progress.upload;
     m_last_version_selected_for_upload = m_upload_progress.client_version;
     m_last_download_mark_sent          = m_last_download_mark_received;
+    m_pending_compensating_write_errors.clear();
     // clang-format on
 }
 
