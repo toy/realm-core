@@ -42,4 +42,14 @@ create_mockable_proxy_socket_provider(std::shared_ptr<sync::SyncSocketProvider> 
 std::shared_ptr<sync::SyncSocketProvider> get_testing_sync_socket_provider();
 std::optional<sync::ResumptionDelayInfo> get_testing_resumption_delay_info();
 
+struct DisableNetworkChaosGuard {
+    DisableNetworkChaosGuard();
+    ~DisableNetworkChaosGuard();
+
+    DisableNetworkChaosGuard(const DisableNetworkChaosGuard&) = delete;
+    DisableNetworkChaosGuard& operator=(const DisableNetworkChaosGuard&) = delete;
+    DisableNetworkChaosGuard(DisableNetworkChaosGuard&&) = delete;
+    DisableNetworkChaosGuard& operator=(DisableNetworkChaosGuard&&) = delete;
+};
+
 } // namespace realm

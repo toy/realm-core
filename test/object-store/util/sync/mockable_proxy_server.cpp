@@ -180,6 +180,15 @@ set_and_get_global_socket_provider(std::optional<std::shared_ptr<sync::SyncSocke
     return global_socket_provider;
 }
 
+bool set_and_get_testing_socket_provider_disabled(std::optional<bool> update)
+{
+    static std::atomic<bool> disabled = false;
+    if (update) {
+        disabled.store(*update);
+    }
+    return disabled.load();
+}
+
 struct DroppingSocketsState : public util::RefCountBase {
     struct DroppingSocketState {
         std::bernoulli_distribution dist;
@@ -200,6 +209,9 @@ std::shared_ptr<sync::SyncSocketProvider> create_dropping_socket_provider(std::d
     state->rand = std::move(random_engine);
     callbacks.on_websocket_send = [state](uint64_t conn_id,
                                           util::Span<const char> data) -> util::Future<util::Span<const char>> {
+        if (set_and_get_testing_socket_provider_disabled(std::nullopt)) {
+            return data;
+        }
         auto [it, inserted] = state->conn_states.insert({conn_id, {std::bernoulli_distribution{1 / 20.0}}});
         if (!it->second.dist(state->rand)) {
             return data;
@@ -210,6 +222,10 @@ std::shared_ptr<sync::SyncSocketProvider> create_dropping_socket_provider(std::d
 
     callbacks.on_websocket_event = [state](uint64_t conn_id,
                                            sync::WebSocketEvent&& event) -> util::Future<sync::WebSocketEvent> {
+        if (set_and_get_testing_socket_provider_disabled(std::nullopt)) {
+            return event;
+        }
+
         if (event.is_terminal_event()) {
             return event;
         }
@@ -301,7 +317,7 @@ std::shared_ptr<sync::SyncSocketProvider> get_testing_sync_socket_provider()
 
 std::optional<sync::ResumptionDelayInfo> get_testing_resumption_delay_info()
 {
-    if (!get_testing_sync_socket_provider()) {
+    if (!get_testing_sync_socket_provider() || set_and_get_testing_socket_provider_disabled(std::nullopt)) {
         return std::nullopt;
     }
     sync::ResumptionDelayInfo delay_info;
@@ -309,6 +325,16 @@ std::optional<sync::ResumptionDelayInfo> get_testing_resumption_delay_info()
     delay_info.resumption_delay_interval = std::chrono::seconds(1);
     delay_info.resumption_delay_backoff_multiplier = 1;
     return delay_info;
+}
+
+DisableNetworkChaosGuard::DisableNetworkChaosGuard()
+{
+    set_and_get_testing_socket_provider_disabled(true);
+}
+
+DisableNetworkChaosGuard::~DisableNetworkChaosGuard()
+{
+    set_and_get_testing_socket_provider_disabled(false);
 }
 
 } // namespace realm

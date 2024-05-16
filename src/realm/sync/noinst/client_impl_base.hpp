@@ -1476,6 +1476,8 @@ inline void ClientImpl::Session::connection_established(bool fast_reconnect)
         ++m_target_download_mark;
     }
 
+    process_pending_flx_bootstrap();
+
     if (!m_suspended) {
         // Ready to send BIND message
         enlist_to_send(); // Throws
