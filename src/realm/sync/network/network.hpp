@@ -323,6 +323,8 @@ public:
     void reset() noexcept;
     /// @}
 
+    void drain() noexcept;
+
     /// \brief Submit a handler to be executed by the event loop thread.
     ///
     /// Register the sepcified completion handler for immediate asynchronous
