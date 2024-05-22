@@ -296,9 +296,7 @@ ClientImpl::SyncTrigger ClientImpl::create_trigger(SyncSocketProvider::FunctionH
     return std::make_unique<Trigger<ClientImpl>>(this, std::move(handler));
 }
 
-Connection::~Connection()
-{
-}
+Connection::~Connection() {}
 
 void Connection::activate()
 {
@@ -515,6 +513,9 @@ void Connection::websocket_closed_handler(bool was_clean, WebSocketError error_c
 
     switch (error_code) {
         case WebSocketError::websocket_ok:
+            close_due_to_transient_error(
+                {ErrorCodes::ConnectionClosed, util::format("Connection closed by server: %1", msg)},
+                ConnectionTerminationReason::server_said_try_again_later);
             break;
         case WebSocketError::websocket_resolve_failed:
             [[fallthrough]];

@@ -2407,15 +2407,12 @@ std::error_code Socket::connect(const Endpoint& ep, std::error_code& ec)
 }
 
 
-std::error_code Socket::shutdown(shutdown_type what, std::error_code& ec)
+void Socket::shutdown(shutdown_type what, std::error_code& ec)
 {
     native_handle_type sock_fd = m_desc.native_handle();
     int how = what;
     int ret = ::shutdown(sock_fd, how);
-    if (REALM_UNLIKELY(check_socket_error(ret, ec)))
-        return ec;
-    ec = std::error_code(); // Success
-    return ec;
+    check_socket_error(ret, ec);
 }
 
 
