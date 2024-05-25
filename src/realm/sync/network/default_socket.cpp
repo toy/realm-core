@@ -266,9 +266,6 @@ private:
         m_state = State::Disconnected;
         m_socket->cancel();
         m_socket->close();
-        if (m_drain_timer) {
-            m_drain_timer->cancel();
-        }
     }
 
     void initiate_resolve();
@@ -308,7 +305,6 @@ private:
     util::Optional<network::Socket> m_socket;
     util::Optional<network::ssl::Context> m_ssl_context;
     util::Optional<network::ssl::Stream> m_ssl_stream;
-    util::Optional<network::DeadlineTimer> m_drain_timer;
     network::ReadAheadBuffer m_read_ahead_buffer;
     websocket::Socket m_websocket;
     util::Optional<HTTPClient<DefaultWebSocketImpl>> m_proxy_client;
@@ -577,26 +573,6 @@ void DefaultWebSocketImpl::write_close_frame()
 {
     auto old_write_state = std::exchange(m_write_state, WriteState::NeedsCloseFrame);
     auto self_guard = util::bind_ptr(this);
-    if (old_write_state != WriteState::NeedsCloseFrame) {
-        REALM_ASSERT(!m_drain_timer);
-        m_drain_timer.emplace(m_service);
-        m_drain_timer->async_wait(std::chrono::milliseconds(250), [self = self_guard](Status status) {
-            if (status == ErrorCodes::OperationAborted) {
-                self->m_network_logger.debug("drain timer aborted");
-                return;
-            }
-            REALM_ASSERT(status.is_ok());
-            if (self->m_state == State::Disconnected) {
-                self->m_network_logger.debug("drain timer superseded");
-                return;
-            }
-            if (self->m_state == State::SendingCloseFrame) {
-                self->m_network_logger.debug("Timed out while sending websocket close frame - closing websocket");
-                self->shutdown_socket();
-            }
-        });
-    }
-
     if (old_write_state == WriteState::Idle || old_write_state == WriteState::NeedsCloseFrame) {
         m_network_logger.trace("Sending close frame");
         m_websocket.async_write_close(nullptr, 0, [self = self_guard](std::error_code ec, size_t) {
