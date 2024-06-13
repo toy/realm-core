@@ -127,34 +127,7 @@ inline bool try_parse_specials(std::string str, T& ret)
 }
 
 template <typename T>
-inline const char* get_type_name()
-{
-    return "unknown";
-}
-template <>
-inline const char* get_type_name<int64_t>()
-{
-    return "number";
-}
-template <>
-inline const char* get_type_name<float>()
-{
-    return "floating point number";
-}
-template <>
-inline const char* get_type_name<double>()
-{
-    return "floating point number";
-}
-
-template <>
-inline const char* get_type_name<Decimal128>()
-{
-    return "decimal number";
-}
-
-template <typename T>
-inline T string_to(const std::string& s)
+inline std::optional<T> string_to(const std::string& s)
 {
     std::istringstream iss(s);
     iss.imbue(std::locale::classic());
@@ -162,18 +135,18 @@ inline T string_to(const std::string& s)
     iss >> value;
     if (iss.fail()) {
         if (!try_parse_specials(s, value)) {
-            throw InvalidQueryArgError(util::format("Cannot convert '%1' to a %2", s, get_type_name<T>()));
+            return {};
         }
     }
     return value;
 }
 
 template <>
-inline Decimal128 string_to<Decimal128>(const std::string& s)
+inline std::optional<Decimal128> string_to<Decimal128>(const std::string& s)
 {
     Decimal128 value(s);
     if (value.is_nan()) {
-        throw InvalidQueryArgError(util::format("Cannot convert '%1' to a %2", s, get_type_name<Decimal128>()));
+        return {};
     }
     return value;
 }
@@ -667,10 +640,29 @@ Query BetweenNode::visit(ParserDriver* drv)
 
     auto& min(limits->elements.at(0));
     auto& max(limits->elements.at(1));
+    Query q(drv->m_base_table);
+
+    auto tmp = prop->visit(drv);
+    const ObjPropertyBase* obj_prop = dynamic_cast<const ObjPropertyBase*>(tmp.get());
+    if (obj_prop) {
+        if (tmp->get_type() == type_Int) {
+            auto min_val = min->visit(drv, type_Int);
+            auto max_val = max->visit(drv, type_Int);
+            q.between(obj_prop->column_key(), min_val->get_mixed().get_int(), max_val->get_mixed().get_int());
+            return q;
+        }
+        if (tmp->get_type() == type_Timestamp) {
+            auto min_val = min->visit(drv, type_Timestamp);
+            auto max_val = max->visit(drv, type_Timestamp);
+            q.between(obj_prop->column_key(), min_val->get_mixed().get_timestamp(),
+                      max_val->get_mixed().get_timestamp());
+            return q;
+        }
+    }
+
     RelationalNode cmp1(prop, CompareType::GREATER_EQUAL, min);
     RelationalNode cmp2(prop, CompareType::LESS_EQUAL, max);
 
-    Query q(drv->m_base_table);
     q.and_query(cmp1.visit(drv));
     q.and_query(cmp2.visit(drv));
 
@@ -1391,16 +1383,24 @@ std::unique_ptr<Subexpr> ConstantNode::visit(ParserDriver* drv, DataType hint)
                 StringData str = value.get_string();
                 switch (hint) {
                     case type_Int:
-                        value = string_to<int64_t>(str);
+                        if (auto val = string_to<int64_t>(str)) {
+                            value = *val;
+                        }
                         break;
                     case type_Float:
-                        value = string_to<float>(str);
+                        if (auto val = string_to<float>(str)) {
+                            value = *val;
+                        }
                         break;
                     case type_Double:
-                        value = string_to<double>(str);
+                        if (auto val = string_to<double>(str)) {
+                            value = *val;
+                        }
                         break;
                     case type_Decimal:
-                        value = string_to<Decimal128>(str);
+                        if (auto val = string_to<Decimal128>(str)) {
+                            value = *val;
+                        }
                         break;
                     default:
                         break;
@@ -1443,11 +1443,6 @@ std::unique_ptr<Subexpr> ConstantNode::visit(ParserDriver* drv, DataType hint)
             }
             else {
                 explain_value_message = util::format("argument %1 with value '%2'", explain_value_message, value);
-                if (!(m_target_table || Mixed::data_types_are_comparable(value.get_type(), hint) ||
-                      Mixed::is_numeric(hint) || (value.is_type(type_String) && hint == type_TypeOfValue))) {
-                    throw InvalidQueryArgError(
-                        util::format("Cannot compare %1 to a %2", explain_value_message, get_data_type_name(hint)));
-                }
             }
         }
     }
@@ -1484,6 +1479,13 @@ std::unique_ptr<Subexpr> ConstantNode::visit(ParserDriver* drv, DataType hint)
     }
 
     convert_if_needed(value);
+
+    if (type == Type::ARG && !(m_target_table || Mixed::data_types_are_comparable(value.get_type(), hint) ||
+                               (value.is_type(type_TypedLink) && hint == type_Link) ||
+                               (value.is_type(type_String) && hint == type_TypeOfValue))) {
+        throw InvalidQueryArgError(
+            util::format("Cannot compare %1 to a %2", explain_value_message, get_data_type_name(hint)));
+    }
 
     switch (value.get_type()) {
         case type_Int: {
