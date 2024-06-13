@@ -30,11 +30,6 @@ public:
         initiate_resolve();
     }
 
-    ~DefaultWebSocketImpl()
-    {
-        m_network_logger.debug("Websocket destroyed");
-    }
-
     void async_write_binary(util::Span<const char> data, SyncSocketProvider::FunctionHandler&& handler) override
     {
         REALM_ASSERT(m_attached);
@@ -199,7 +194,7 @@ private:
     bool websocket_error_and_close_handler(bool was_clean, WebSocketError code, std::string_view reason)
     {
         if (!m_attached) {
-            m_network_logger.debug("Websocket was closed by remote peer after the sync client detached it");
+            m_network_logger.trace("Websocket was closed by remote peer after the sync client detached it");
             if (was_clean && m_state != State::Disconnected) {
                 shutdown_socket();
             }
@@ -260,7 +255,6 @@ private:
     void write_close_frame();
     void shutdown_socket()
     {
-        m_network_logger.debug("shutting down socket");
         REALM_ASSERT(m_state != State::Disconnected);
         REALM_ASSERT(m_socket);
         m_state = State::Disconnected;
@@ -581,7 +575,7 @@ void DefaultWebSocketImpl::write_close_frame()
             }
             REALM_ASSERT(self->m_state == State::SendingCloseFrame || self->m_state == State::Disconnected);
             if (self->m_state == State::SendingCloseFrame) {
-                self->m_network_logger.debug("closing socket after sending close frame");
+                self->m_network_logger.trace("closing socket after sending close frame");
                 self->shutdown_socket();
             }
         });
@@ -590,7 +584,6 @@ void DefaultWebSocketImpl::write_close_frame()
 
 void DefaultWebSocketImpl::detach()
 {
-    m_network_logger.debug("detaching");
     m_attached = false;
     close();
 }
@@ -600,12 +593,12 @@ void DefaultWebSocketImpl::close()
     switch (m_state) {
         case State::Connecting:
             if (m_resolver) {
-                m_network_logger.debug("resolve not complete, closing immediately");
+                m_network_logger.trace("resolve not complete, closing immediately");
                 m_resolver->cancel();
                 m_state = State::Disconnected;
                 return;
             }
-            m_network_logger.debug("websocket not connected, closing socket");
+            m_network_logger.trace("websocket not connected, closing socket");
             shutdown_socket();
             break;
         case State::WebSocketConnected:
