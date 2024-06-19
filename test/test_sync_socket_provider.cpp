@@ -158,7 +158,10 @@ public:
 
     ~TestWebSocketServer()
     {
-        m_acceptor.cancel();
+        do_synchronous_post(m_service, [&] {
+            m_acceptor.cancel();
+            m_acceptor.close();
+        });
         m_service.drain();
         m_server_thread.join();
     }
