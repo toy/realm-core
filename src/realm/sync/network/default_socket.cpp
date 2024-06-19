@@ -9,6 +9,33 @@
 #include <realm/util/scope_exit.hpp>
 
 namespace realm::sync::websocket {
+Status status_from_network_error_code(std::error_code ec)
+{
+    if (!ec) {
+        return Status::OK();
+    }
+    switch (ec.value()) {
+        case util::error::operation_aborted:
+            return {ErrorCodes::Error::OperationAborted, "Write operation cancelled"};
+        case util::error::address_family_not_supported:
+            [[fallthrough]];
+        case util::error::invalid_argument:
+            return {ErrorCodes::Error::InvalidArgument, ec.message()};
+        case util::error::no_memory:
+            return {ErrorCodes::Error::OutOfMemory, ec.message()};
+        case util::error::connection_aborted:
+            [[fallthrough]];
+        case util::error::connection_reset:
+            [[fallthrough]];
+        case util::error::broken_pipe:
+            [[fallthrough]];
+        case util::error::resource_unavailable_try_again:
+            return {ErrorCodes::Error::ConnectionClosed, ec.message()};
+        default:
+            return {ErrorCodes::Error::UnknownError, ec.message()};
+    }
+}
+
 
 ///
 /// DefaultWebSocketImpl - websocket implementation for the default socket provider
@@ -60,7 +87,7 @@ public:
                     write_handler({ErrorCodes::OperationAborted, "Websocket closed before write could complete"});
                     return;
                 }
-                write_handler(DefaultWebSocketImpl::get_status_from_util_error(ec));
+                write_handler(status_from_network_error_code(ec));
             });
     }
 
@@ -225,33 +252,6 @@ private:
         return true;
     }
 
-    static Status get_status_from_util_error(std::error_code ec)
-    {
-        if (!ec) {
-            return Status::OK();
-        }
-        switch (ec.value()) {
-            case util::error::operation_aborted:
-                return {ErrorCodes::Error::OperationAborted, "Write operation cancelled"};
-            case util::error::address_family_not_supported:
-                [[fallthrough]];
-            case util::error::invalid_argument:
-                return {ErrorCodes::Error::InvalidArgument, ec.message()};
-            case util::error::no_memory:
-                return {ErrorCodes::Error::OutOfMemory, ec.message()};
-            case util::error::connection_aborted:
-                [[fallthrough]];
-            case util::error::connection_reset:
-                [[fallthrough]];
-            case util::error::broken_pipe:
-                [[fallthrough]];
-            case util::error::resource_unavailable_try_again:
-                return {ErrorCodes::Error::ConnectionClosed, ec.message()};
-            default:
-                return {ErrorCodes::Error::UnknownError, ec.message()};
-        }
-    }
-
     void write_close_frame();
     void shutdown_socket()
     {
@@ -352,11 +352,11 @@ void DefaultWebSocketImpl::initiate_resolve()
     m_network_logger.detail("Resolving '%1:%2'", address, port); // Throws
 
     network::Resolver::Query query(address, util::to_string(port)); // Throws
-    auto handler = [this](std::error_code ec, network::Endpoint::List endpoints) {
+    auto handler = [self = util::bind_ptr(this)](std::error_code ec, network::Endpoint::List endpoints) {
         // If the operation is aborted, the connection object may have been
         // destroyed.
         if (ec != util::error::operation_aborted)
-            handle_resolve(ec, std::move(endpoints)); // Throws
+            self->handle_resolve(ec, std::move(endpoints)); // Throws
     };
     m_resolver.emplace(m_service);                                   // Throws
     m_resolver->async_resolve(std::move(query), std::move(handler)); // Throws
@@ -386,12 +386,13 @@ void DefaultWebSocketImpl::initiate_tcp_connect(network::Endpoint::List endpoint
     network::Endpoint ep = *(endpoints.begin() + i);
     std::size_t n = endpoints.size();
     m_socket.emplace(m_service); // Throws
-    m_socket->async_connect(ep, [this, endpoints = std::move(endpoints), i](std::error_code ec) mutable {
-        // If the operation is aborted, the connection object may have been
-        // destroyed.
-        if (ec != util::error::operation_aborted)
-            handle_tcp_connect(ec, std::move(endpoints), i); // Throws
-    });
+    m_socket->async_connect(
+        ep, [self = util::bind_ptr(this), endpoints = std::move(endpoints), i](std::error_code ec) mutable {
+            // If the operation is aborted, the connection object may have been
+            // destroyed.
+            if (ec != util::error::operation_aborted)
+                self->handle_tcp_connect(ec, std::move(endpoints), i); // Throws
+        });
     m_network_logger.detail("Connecting to endpoint '%1:%2' (%3/%4)", ep.address(), ep.port(), (i + 1), n); // Throws
 }
 
@@ -448,25 +449,25 @@ void DefaultWebSocketImpl::initiate_http_tunnel()
     // TODO handle proxy authorization
 
     m_proxy_client.emplace(*this, m_logger_ptr);
-    auto handler = [this](HTTPResponse response, std::error_code ec) {
+    auto handler = [self = util::bind_ptr(this)](HTTPResponse response, std::error_code ec) {
         if (ec && ec != util::error::operation_aborted) {
-            m_network_logger.error("Failed to establish HTTP tunnel: %1", ec.message());
+            self->m_network_logger.error("Failed to establish HTTP tunnel: %1", ec.message());
             constexpr bool was_clean = false;
-            websocket_error_and_close_handler(was_clean, WebSocketError::websocket_connection_failed,
-                                              ec.message()); // Throws
+            self->websocket_error_and_close_handler(was_clean, WebSocketError::websocket_connection_failed,
+                                                    ec.message()); // Throws
             return;
         }
 
         if (response.status != HTTPStatus::Ok) {
-            m_network_logger.error("Proxy server returned response '%1 %2'", response.status,
-                                   response.reason); // Throws
+            self->m_network_logger.error("Proxy server returned response '%1 %2'", response.status,
+                                         response.reason); // Throws
             constexpr bool was_clean = false;
-            websocket_error_and_close_handler(was_clean, WebSocketError::websocket_connection_failed,
-                                              response.reason); // Throws
+            self->websocket_error_and_close_handler(was_clean, WebSocketError::websocket_connection_failed,
+                                                    response.reason); // Throws
             return;
         }
 
-        initiate_websocket_or_ssl_handshake(); // Throws
+        self->initiate_websocket_or_ssl_handshake(); // Throws
     };
 
     m_proxy_client->async_request(req, std::move(handler)); // Throws
@@ -507,11 +508,11 @@ void DefaultWebSocketImpl::initiate_ssl_handshake()
         }
     }
 
-    auto handler = [this](std::error_code ec) {
+    auto handler = [self = util::bind_ptr(this)](std::error_code ec) {
         // If the operation is aborted, the connection object may have been
         // destroyed.
         if (ec != util::error::operation_aborted)
-            handle_ssl_handshake(ec); // Throws
+            self->handle_ssl_handshake(ec); // Throws
     };
     m_ssl_stream->async_handshake(std::move(handler)); // Throws
 
