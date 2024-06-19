@@ -113,6 +113,29 @@ private:
     std::shared_ptr<WebSocketEventQueue> m_queue;
 };
 
+static std::unique_ptr<WebSocketInterface>
+do_connect(DefaultSocketProvider& provider, std::unique_ptr<WebSocketObserver> observer, WebSocketEndpoint ep)
+{
+    auto pf = util::make_promise_future<std::unique_ptr<WebSocketInterface>>();
+    provider.post([&](Status status) {
+        REALM_ASSERT(status.is_ok());
+        pf.promise.emplace_value(provider.connect(std::move(observer), std::move(ep)));
+    });
+    return std::move(pf.future.get());
+}
+
+template <typename Service, typename Func>
+static void do_synchronous_post(Service& service, Func&& func)
+{
+    auto pf = util::make_promise_future();
+    service.post([&](Status status) {
+        REALM_ASSERT(status.is_ok());
+        func();
+        pf.promise.emplace_value();
+    });
+    pf.future.get();
+}
+
 class TestWebSocketServer {
 public:
     TestWebSocketServer(test_util::unit_test::TestContext& test_context)
@@ -123,16 +146,14 @@ public:
             m_service.run_until_stopped();
         })
     {
-        auto pf = util::make_promise_future();
-        post([this, promise = std::move(pf.promise)]() mutable {
+        do_synchronous_post(m_service, [this]() mutable {
             m_acceptor.open(m_endpoint.protocol());
+            m_acceptor.set_option(network::SocketBase::reuse_address(true));
             m_acceptor.bind(m_endpoint);
             m_endpoint = m_acceptor.local_endpoint();
             m_acceptor.listen();
             m_logger->debug("Listening on port %1", m_endpoint.port());
-            promise.emplace_value();
         });
-        pf.future.get();
     }
 
     ~TestWebSocketServer()
@@ -174,14 +195,9 @@ public:
 
         ~Conn()
         {
-            auto pf = util::make_promise_future();
-            service.post([this, promise = std::move(pf.promise)](Status status) mutable {
-                REALM_ASSERT(status.is_ok());
+            do_synchronous_post(service, [this] {
                 shutdown_websocket();
-                promise.emplace_value();
             });
-
-            pf.future.get();
         }
 
         util::Future<void> send_binary_message(util::Span<char const> data)
@@ -461,7 +477,7 @@ TEST(DefaultWebSocket_WriteErrors)
 
     auto&& [observer, client_events] = WebSocketEventQueueObserver::make_observer_and_queue();
     auto server_conn_fut = server.accept_connection();
-    auto client = client_provider.connect(std::move(observer), server.endpoint());
+    auto client = do_connect(client_provider, std::move(observer), server.endpoint());
 
     std::string message_to_send = "hello, world!\n";
     auto [before_connect_fut, before_connect_cb] = make_fut_callback();
@@ -507,6 +523,10 @@ TEST(DefaultWebSocket_WriteErrors)
 
     auto server_read_error = server_conn->next_event().get();
     CHECK(server_read_error.type == WebSocketEvent::ReadError);
+
+    do_synchronous_post(client_provider, [&] {
+        client.reset();
+    });
 }
 
 TEST(DefaultWebSocket_ClientClosedBeforeHandshake)
@@ -516,12 +536,15 @@ TEST(DefaultWebSocket_ClientClosedBeforeHandshake)
 
     auto&& [observer, client_events] = WebSocketEventQueueObserver::make_observer_and_queue();
     auto server_conn_fut = server.accept_connection();
-    auto client = client_provider.connect(std::move(observer), server.endpoint());
+    auto client = do_connect(client_provider, std::move(observer), server.endpoint());
 
     auto server_conn = std::move(server_conn_fut.get());
     auto handshake_start_fut = server_conn->initiate_server_handshake();
     handshake_start_fut.get();
-    client.reset();
+
+    do_synchronous_post(client_provider, [&] {
+        client.reset();
+    });
     auto handshake_complete_fut = util::make_promise_future();
     server.post([req = handshake_start_fut.get(), server_conn,
                  promise = std::move(handshake_complete_fut.promise)]() mutable {
