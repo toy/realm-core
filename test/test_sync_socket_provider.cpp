@@ -30,7 +30,6 @@ class WebSocketEventQueue {
 public:
     ~WebSocketEventQueue()
     {
-        REALM_ASSERT_RELEASE(waiters.empty());
         REALM_ASSERT_RELEASE(events.empty());
     }
 
@@ -39,34 +38,24 @@ public:
     {
         WebSocketEvent event{type, args...};
         std::lock_guard lk(mutex);
-        if (!waiters.empty()) {
-            waiters.front().emplace_value(std::move(event));
-            waiters.pop();
-        }
-        else {
-            events.push(std::move(event));
-        }
+        events.push(std::move(event));
+        cv.notify_one();
     }
 
-    util::Future<WebSocketEvent> next_event()
+    WebSocketEvent next_event()
     {
         std::unique_lock lk(mutex);
-        if (events.empty()) {
-            auto pf = util::make_promise_future<WebSocketEvent>();
-            waiters.push(std::move(pf.promise));
-            return std::move(pf.future);
-        }
-        else {
-            auto ret = std::move(events.front());
-            events.pop();
-            return ret;
-        }
+        cv.wait(lk, [&] {
+            return !events.empty();
+        });
+        auto ret = std::move(events.front());
+        events.pop();
+        return ret;
     }
 
 private:
     std::mutex mutex;
     std::condition_variable cv;
-    std::queue<util::Promise<WebSocketEvent>> waiters;
     std::queue<WebSocketEvent> events;
 };
 
@@ -113,27 +102,71 @@ private:
     std::shared_ptr<WebSocketEventQueue> m_queue;
 };
 
+template <typename T, typename Service, typename Func>
+static T do_synchronous_post(Service& service, Func&& func)
+{
+    auto pf = util::make_promise_future<T>();
+    service.post([&](Status status) {
+        REALM_ASSERT(status.is_ok());
+        if constexpr (std::is_void_v<T>) {
+            func();
+            pf.promise.emplace_value();
+        }
+        else {
+            pf.promise.emplace_value(func());
+        }
+    });
+
+    if constexpr (std::is_move_constructible_v<T>) {
+        return std::move(pf.future.get());
+    }
+    else {
+        return pf.future.get();
+    }
+}
+
+
+class WrappedWebSocket : public WebSocketInterface {
+public:
+    WrappedWebSocket(SyncSocketProvider& provider, std::unique_ptr<WebSocketInterface>&& socket)
+        : m_provider(provider)
+        , m_socket(std::move(socket))
+    {
+    }
+
+    ~WrappedWebSocket()
+    {
+        do_synchronous_post<void>(m_provider, [&] {
+            m_socket.reset();
+        });
+    }
+
+    std::string_view get_appservices_request_id() const noexcept override
+    {
+        return do_synchronous_post<std::string_view>(m_provider, [&] {
+            return m_socket->get_appservices_request_id();
+        });
+    }
+
+    void async_write_binary(util::Span<const char> data, SyncSocketProvider::FunctionHandler&& handler) override
+    {
+        do_synchronous_post<void>(m_provider, [&] {
+            m_socket->async_write_binary(data, std::move(handler));
+        });
+    }
+
+private:
+    SyncSocketProvider& m_provider;
+    std::unique_ptr<WebSocketInterface> m_socket;
+};
+
 static std::unique_ptr<WebSocketInterface>
 do_connect(DefaultSocketProvider& provider, std::unique_ptr<WebSocketObserver> observer, WebSocketEndpoint ep)
 {
-    auto pf = util::make_promise_future<std::unique_ptr<WebSocketInterface>>();
-    provider.post([&](Status status) {
-        REALM_ASSERT(status.is_ok());
-        pf.promise.emplace_value(provider.connect(std::move(observer), std::move(ep)));
+    auto socket = do_synchronous_post<std::unique_ptr<WebSocketInterface>>(provider, [&] {
+        return provider.connect(std::move(observer), std::move(ep));
     });
-    return std::move(pf.future.get());
-}
-
-template <typename Service, typename Func>
-static void do_synchronous_post(Service& service, Func&& func)
-{
-    auto pf = util::make_promise_future();
-    service.post([&](Status status) {
-        REALM_ASSERT(status.is_ok());
-        func();
-        pf.promise.emplace_value();
-    });
-    pf.future.get();
+    return std::make_unique<WrappedWebSocket>(provider, std::move(socket));
 }
 
 class TestWebSocketServer {
@@ -146,9 +179,8 @@ public:
             m_service.run_until_stopped();
         })
     {
-        do_synchronous_post(m_service, [this]() mutable {
+        do_synchronous_post<void>(m_service, [this]() mutable {
             m_acceptor.open(m_endpoint.protocol());
-            m_acceptor.set_option(network::SocketBase::reuse_address(true));
             m_acceptor.bind(m_endpoint);
             m_endpoint = m_acceptor.local_endpoint();
             m_acceptor.listen();
@@ -158,7 +190,7 @@ public:
 
     ~TestWebSocketServer()
     {
-        do_synchronous_post(m_service, [&] {
+        do_synchronous_post<void>(m_service, [&] {
             m_acceptor.cancel();
             m_acceptor.close();
         });
@@ -198,7 +230,7 @@ public:
 
         ~Conn()
         {
-            do_synchronous_post(service, [this] {
+            do_synchronous_post<void>(service, [this] {
                 shutdown_websocket();
             });
         }
@@ -314,7 +346,7 @@ public:
                 });
         }
 
-        util::Future<WebSocketEvent> next_event()
+        WebSocketEvent next_event()
         {
             return events.next_event();
         }
@@ -431,14 +463,10 @@ public:
     util::Future<util::bind_ptr<Conn>> accept_connection()
     {
         auto pf = util::make_promise_future<util::bind_ptr<Conn>>();
-        m_service.post([this, promise = std::move(pf.promise)](Status status) mutable {
-            if (status == ErrorCodes::OperationAborted) {
-                promise.set_error(status);
-                return;
-            }
+        post([this, promise = std::move(pf.promise)]() mutable {
             auto conn = util::make_bind<Conn>(m_service, m_test_context);
             m_acceptor.async_accept(
-                conn->socket, [conn = std::move(conn), promise = std::move(promise)](std::error_code ec) mutable {
+                conn->socket, [conn, promise = std::move(promise)](std::error_code ec) mutable {
                     if (ec) {
                         promise.set_error(status_from_network_error_code(ec));
                         return;
@@ -484,52 +512,40 @@ TEST(DefaultWebSocket_WriteErrors)
 
     std::string message_to_send = "hello, world!\n";
     auto [before_connect_fut, before_connect_cb] = make_fut_callback();
-    client_provider.post([&message_to_send, &client, cb = std::move(before_connect_cb)](Status status) mutable {
-        REALM_ASSERT(status.is_ok());
-        client->async_write_binary(message_to_send, std::move(cb));
-    });
+    client->async_write_binary(message_to_send, std::move(before_connect_cb));
     auto status = before_connect_fut.get_no_throw();
     CHECK(status == ErrorCodes::InvalidArgument);
 
     auto server_conn = std::move(server_conn_fut.get());
     server_conn->do_server_handshake();
 
-    CHECK(client_events->next_event().get().type == WebSocketEvent::HandshakeComplete);
-    CHECK(server_conn->next_event().get().type == WebSocketEvent::HandshakeComplete);
+    CHECK(client_events->next_event().type == WebSocketEvent::HandshakeComplete);
+    CHECK(server_conn->next_event().type == WebSocketEvent::HandshakeComplete);
 
     auto [after_connect_fut, after_connect_cb] = make_fut_callback();
-    client_provider.post([&message_to_send, &client, cb = std::move(after_connect_cb)](Status status) mutable {
-        REALM_ASSERT(status.is_ok());
-        client->async_write_binary(message_to_send, std::move(cb));
-    });
+
+    client->async_write_binary(message_to_send, std::move(after_connect_cb));
     status = after_connect_fut.get_no_throw();
     CHECK(status.is_ok());
-    auto bin_msg_event = server_conn->next_event().get();
+    auto bin_msg_event = server_conn->next_event();
     CHECK(bin_msg_event.type == WebSocketEvent::BinaryMessage);
     CHECK(bin_msg_event.payload == message_to_send);
 
     std::string close_msg = "moved";
     server_conn->send_close_frame(WebSocketError::websocket_moved_permanently, close_msg).get();
 
-    auto close_event = client_events->next_event().get();
+    auto close_event = client_events->next_event();
     CHECK(close_event.type == WebSocketEvent::CloseFrame);
     CHECK(close_event.payload == close_msg);
     CHECK(close_event.close_code == WebSocketError::websocket_moved_permanently);
 
     auto [after_close_fut, after_close_cb] = make_fut_callback();
-    client_provider.post([&message_to_send, &client, cb = std::move(after_close_cb)](Status status) mutable {
-        REALM_ASSERT(status.is_ok());
-        client->async_write_binary(message_to_send, std::move(cb));
-    });
+    client->async_write_binary(message_to_send, std::move(after_close_cb));
     status = after_close_fut.get_no_throw();
     CHECK(status == ErrorCodes::ConnectionClosed);
 
-    auto server_read_error = server_conn->next_event().get();
+    auto server_read_error = server_conn->next_event();
     CHECK(server_read_error.type == WebSocketEvent::ReadError);
-
-    do_synchronous_post(client_provider, [&] {
-        client.reset();
-    });
 }
 
 TEST(DefaultWebSocket_ClientClosedBeforeHandshake)
@@ -545,9 +561,7 @@ TEST(DefaultWebSocket_ClientClosedBeforeHandshake)
     auto handshake_start_fut = server_conn->initiate_server_handshake();
     handshake_start_fut.get();
 
-    do_synchronous_post(client_provider, [&] {
-        client.reset();
-    });
+    client.reset();
     auto handshake_complete_fut = util::make_promise_future();
     server.post([req = handshake_start_fut.get(), server_conn,
                  promise = std::move(handshake_complete_fut.promise)]() mutable {
@@ -555,6 +569,6 @@ TEST(DefaultWebSocket_ClientClosedBeforeHandshake)
     });
 
     handshake_complete_fut.future.get();
-    auto read_error_event = server_conn->next_event().get();
+    auto read_error_event = server_conn->next_event();
     CHECK(read_error_event.type == WebSocketEvent::ReadError);
 }
