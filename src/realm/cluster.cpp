@@ -776,7 +776,7 @@ inline void Cluster::do_erase(size_t ndx, ColKey col_key)
     values.erase(ndx);
 }
 
-inline void Cluster::do_erase_mixed(size_t ndx, ColKey col_key, ObjKey key, CascadeState& state)
+inline void Cluster::do_erase_mixed(size_t ndx, ColKey col_key, ObjKey, CascadeState& state)
 {
     const Table* origin_table = m_tree_top.get_owning_table();
     auto col_ndx = col_key.get_index();
@@ -788,16 +788,16 @@ inline void Cluster::do_erase_mixed(size_t ndx, ColKey col_key, ObjKey key, Casc
     Mixed value = values.get(ndx);
     if (value.is_type(type_TypedLink)) {
         ObjLink link = value.get<ObjLink>();
-        Obj obj(origin_table->m_own_ref, get_mem(), key, ndx);
+        Obj obj(origin_table->m_own_ref, get_mem(), get_real_key(ndx), ndx);
         obj.remove_backlink(col_key, link, state);
     }
     if (value.is_type(type_List)) {
-        Obj obj(origin_table->m_own_ref, get_mem(), key, ndx);
+        Obj obj(origin_table->m_own_ref, get_mem(), get_real_key(ndx), ndx);
         Lst<Mixed> list(obj, col_key);
         list.remove_backlinks(state);
     }
     if (value.is_type(type_Dictionary)) {
-        Obj obj(origin_table->m_own_ref, get_mem(), key, ndx);
+        Obj obj(origin_table->m_own_ref, get_mem(), get_real_key(ndx), ndx);
         Dictionary dict(obj, col_key);
         dict.remove_backlinks(state);
     }
