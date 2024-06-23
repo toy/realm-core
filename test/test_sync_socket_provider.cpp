@@ -1,16 +1,24 @@
 #include "test.hpp"
 #include "util/random.hpp"
 
+#include <realm/util/async_future_adapter.hpp>
 #include <realm/sync/network/network.hpp>
 #include <realm/sync/network/websocket.hpp>
 #include <realm/sync/network/default_socket.hpp>
 
-#include <functional>
 #include <queue>
 
 using namespace realm;
 using namespace realm::sync;
 using namespace realm::sync::websocket;
+
+namespace realm::util {
+template <>
+Status status_from_error<std::error_code>(std::error_code ec)
+{
+    return status_from_network_error_code(ec);
+}
+} // namespace realm::util
 
 struct WebSocketEvent {
     enum Type {
@@ -126,54 +134,6 @@ static T do_synchronous_post(Service& service, Func&& func)
     }
 }
 
-template <typename T, typename Service, typename OperObj, typename Anchor, typename AsyncFn, typename... Args>
-static util::Future<T> async_future_adapter(Service& service, OperObj& obj, AsyncFn&& fn_ptr, Anchor&& anchor,
-                                            Args... args)
-{
-    auto pf = util::make_promise_future<T>();
-    service.post([anchor = std::move(anchor), &obj, fn_ptr, promise = std::move(pf.promise),
-                  args...](Status status) mutable {
-        if (!status.is_ok()) {
-            promise.set_error(status);
-            return;
-        }
-
-        auto fn = std::mem_fn(fn_ptr);
-        if constexpr (std::is_void_v<T>) {
-            fn(obj, args..., [promise = std::move(promise), anchor = std::move(anchor)](std::error_code ec) mutable {
-                if (ec) {
-                    promise.set_error(status_from_network_error_code(ec));
-                }
-                else {
-                    promise.emplace_value();
-                }
-            });
-        }
-        else {
-            struct Callable {
-                util::Promise<T> promise;
-                Anchor anchor;
-
-                void operator()(std::error_code ec, T result)
-                {
-                    if (ec) {
-                        promise.set_error(status_from_network_error_code(ec));
-                    }
-                    else {
-                        promise.emplace_value(std::move(result));
-                    }
-                }
-
-                void operator()(T result, std::error_code ec)
-                {
-                    (*this)(ec, std::move(result));
-                }
-            } callback{std::move(promise), std::move(anchor)};
-            fn(obj, args..., std::move(callback));
-        }
-    });
-    return std::move(pf.future);
-}
 
 class WrappedWebSocket : public WebSocketInterface {
 public:
@@ -286,8 +246,9 @@ public:
 
         util::Future<void> send_binary_message(util::Span<char const> data)
         {
-            return async_future_adapter<size_t>(service, websocket, &websocket::Socket::async_write_binary,
-                                                util::bind_ptr(this), data.data(), data.size())
+            return util::async_future_adapter<size_t, std::error_code>(service, websocket,
+                                                                       &websocket::Socket::async_write_binary,
+                                                                       util::bind_ptr(this), data.data(), data.size())
                 .ignore_value();
         }
 
@@ -305,14 +266,15 @@ public:
             msg_data[0] = error_short & 0xff;
             msg_data[1] = (error_short >> 8) & 0xff;
             std::copy(msg.begin(), msg.end(), msg_data.begin() + 2);
-            return async_future_adapter<size_t>(service, websocket, &websocket::Socket::async_write_close,
-                                                std::move(anchor), msg_data.data(), msg_data.size())
+            return util::async_future_adapter<size_t, std::error_code>(
+                       service, websocket, &websocket::Socket::async_write_close, std::move(anchor), msg_data.data(),
+                       msg_data.size())
                 .ignore_value();
         }
 
         util::Future<HTTPRequest> initiate_server_handshake()
         {
-            return async_future_adapter<HTTPRequest>(
+            return util::async_future_adapter<HTTPRequest, std::error_code>(
                 service, http_server, &decltype(http_server)::async_receive_request, util::bind_ptr(this));
         }
 
@@ -335,8 +297,8 @@ public:
             REALM_ASSERT(maybe_resp);
             REALM_ASSERT(!ec);
 
-            return async_future_adapter<void>(service, http_server, &HTTPServer<Conn>::async_send_response,
-                                              util::bind_ptr(this), *maybe_resp)
+            return util::async_future_adapter<void, std::error_code>(
+                       http_server, &HTTPServer<Conn>::async_send_response, util::bind_ptr(this), *maybe_resp)
                 .then([self = util::bind_ptr(this)] {
                     self->websocket.initiate_server_websocket_after_handshake();
                 });
